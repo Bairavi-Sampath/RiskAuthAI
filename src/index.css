@@ -1,0 +1,64 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --bg-primary: #F8F7F3;
+    --text-primary: #111111;
+    --accent-gold: #E6C65C;
+    --accent-gold-dark: #C9A737;
+    --accent-gold-light: #F8F2DC;
+    --card-bg: #FFFFFF;
+    --card-border: #E8E6DF;
+    --card-hover-border: #D1CEC4;
+    --surface-subtle: #F0EEE6;
+    --muted-text: #66635C;
+  }
+
+  .dark {
+    --bg-primary: #0F0F0F;
+    --text-primary: #F4F4F2;
+    --accent-gold: #E6C65C;
+    --accent-gold-dark: #C9A737;
+    --accent-gold-light: #2C2612;
+    --card-bg: #171717;
+    --card-border: #262626;
+    --card-hover-border: #3D3D3D;
+    --surface-subtle: #1F1F1F;
+    --muted-text: #9E9B93;
+  }
+
+  * {
+    border-color: var(--card-border);
+  }
+
+  body {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+    transition: background-color 0.2s ease, color 0.2s ease;
+  }
+
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Custom scrollbars for data tables and logs */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(150, 150, 150, 0.25);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(150, 150, 150, 0.4);
+}

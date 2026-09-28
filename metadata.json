@@ -1,0 +1,8 @@
+{
+  "name": " RiskAuthAI",
+  "description": "AI-Powered Risk-Based Authentication System Using Machine Learning for Suspicious Login Detection",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
