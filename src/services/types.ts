@@ -82,7 +82,7 @@ export interface UserAccount {
   id: string;
   name: string;
   email: string;
-  role: 'Security Admin' | 'DevOps Lead' | 'Platform Engineer' | 'SOC Analyst' | 'Finance Director' | 'Product Manager';
+  role: string;
   status: 'Active' | 'Under Review' | 'Suspended';
   riskLevel: RiskLevel;
   avgRiskScore: number;

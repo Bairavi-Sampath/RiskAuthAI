@@ -1,0 +1,146 @@
+name: RiskAuthAI CI/CD Automation
+
+'on':
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend-tests:
+    name: Backend Unit Tests & Syntax Verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'backend/requirements.txt'
+
+      - name: Install Backend Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+      - name: Verify Model Artifact Exists
+        run: |
+          if [ ! -f "backend/model/risk_model.joblib" ]; then
+            echo "::error::Trained ML model artifact backend/model/risk_model.joblib not found!"
+            exit 1
+          fi
+          echo "Model artifact verified."
+
+      - name: Run Backend Unit Tests
+        run: |
+          cd backend
+          python -m unittest test_main.py -v
+
+  frontend-build:
+    name: Frontend Typecheck & Production Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'package-lock.json'
+
+      - name: Install Frontend Dependencies
+        run: npm ci
+
+      - name: Run TypeScript Lint & Typecheck
+        run: npm run lint
+
+      - name: Run Vite Production Bundle Build
+        run: npm run build
+
+      - name: Verify Production Assets Compiled
+        run: |
+          if [ ! -f "dist/index.html" ]; then
+            echo "::error::Compiled frontend dist/index.html not found!"
+            exit 1
+          fi
+          echo "Production assets successfully verified in dist/."
+
+  docker-validation:
+    name: Docker Compose & Container Image Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Validate Docker Compose Configuration
+        run: docker compose config
+
+      - name: Build Backend Container Image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: false
+          tags: riskauth-backend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build Frontend Container Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: riskauth-frontend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  security-audit:
+    name: Security & Secret Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout Repository with Full History
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan for Accidentally Committed Secrets (Gitleaks)
+        uses: gitleaks/gitleaks-action@v2.3.8
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+
+      - name: Set up Python for Dependency Audit
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Audit Python Dependencies
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          python -m pip_audit -r backend/requirements.txt
+
+      - name: Audit Frontend Dependencies
+        run: |
+          echo "Auditing npm dependencies for critical vulnerabilities..."
+          npm audit --audit-level=critical

@@ -6,3 +6,31 @@ coverage/
 *.log
 .env*
 !.env.example
+!backend/.env.example
+
+# Python cache & bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv/
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local databases
+*.db
+*.sqlite3
+backend/data/*.db
+
+# IDE & Editor files
+.idea/
+.vscode/
+*.swp
+*.swo

@@ -2,72 +2,50 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Activity,
-  AlertOctagon,
+  AlertTriangle,
   ArrowRight,
   CheckCircle2,
-  ChevronRight,
   Clock,
-  Cpu,
-  Download,
-  Filter,
-  Flame,
+  ExternalLink,
   Globe,
   HelpCircle,
   Laptop,
   Lock,
-  Plus,
+  MousePointer,
   RefreshCw,
   Search,
   Shield,
   ShieldAlert,
   ShieldCheck,
-  TrendingDown,
-  TrendingUp,
-  X,
-  Zap,
+  Sliders,
 } from 'lucide-react';
-import {
-  Area,
-  AreaChart,
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  Legend,
-  Pie,
-  PieChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts';
-import { RiskBadge } from '../components/common/RiskBadge';
 import { StatCard } from '../components/common/StatCard';
 import { DashboardLayout } from '../components/layout/DashboardLayout';
-import { RiskSimulator } from '../components/simulator/RiskSimulator';
 import { api } from '../services/api';
-import { LoginEvent, SecurityAlert } from '../services/types';
-import { useTheme } from '../context/ThemeContext';
+import { LoginEvent } from '../services/types';
+import { RiskBadge } from '../components/common/RiskBadge';
 
 export const SecurityDashboard: React.FC = () => {
-  const { theme } = useTheme();
   const [metrics, setMetrics] = useState<any>(null);
-  const [recentEvents, setRecentEvents] = useState<LoginEvent[]>([]);
-  const [activeAlerts, setActiveAlerts] = useState<SecurityAlert[]>([]);
+  const [events, setEvents] = useState<LoginEvent[]>([]);
   const [loading, setLoading] = useState(true);
-  const [simulatorModalOpen, setSimulatorModalOpen] = useState(false);
+  const [isLiveData, setIsLiveData] = useState(false);
+  const [selectedFilter, setSelectedFilter] = useState<'ALL' | 'SUSPICIOUS' | 'ALLOWED'>('ALL');
+  const [searchQuery, setSearchQuery] = useState('');
 
   const loadData = async () => {
     setLoading(true);
     try {
-      const [m, evts, alrts] = await Promise.all([
+      const [m, evts] = await Promise.all([
         api.getDashboardMetrics(),
         api.getLoginEvents(),
-        api.getSecurityAlerts(),
       ]);
       setMetrics(m);
-      setRecentEvents(evts.slice(0, 6));
-      setActiveAlerts(alrts.filter((a) => a.status === 'active'));
+      setEvents(evts);
+      setIsLiveData(true);
+    } catch (err) {
+      console.warn('Backend connection issue, showing stored activity:', err);
+      setIsLiveData(false);
     } finally {
       setLoading(false);
     }
@@ -77,27 +55,68 @@ export const SecurityDashboard: React.FC = () => {
     loadData();
   }, []);
 
-  const isDark = theme === 'dark';
-  const gridColor = isDark ? '#262626' : '#E8E6DF';
-  const textColor = isDark ? '#9E9B93' : '#66635C';
+  // Compute actual dynamic statistics from real backend metrics/database
+  const totalLogins = metrics?.totalAttempts ?? (events.length > 0 ? events.length : 0);
+  const allowedCount = metrics?.lowRiskCount ?? events.filter((e) => e.decision === 'ALLOW').length;
+  const verificationCount =
+    metrics?.otpChallengedCount ??
+    metrics?.mediumRiskCount ??
+    events.filter((e) => e.decision === 'OTP').length;
+  const blockedCount =
+    metrics?.blockedCount ??
+    metrics?.highRiskCount ??
+    events.filter((e) => e.decision === 'BLOCK').length;
+  const activeAlertsCount = metrics?.activeAlertsCount ?? 0;
+
+  const totalForPercent = Math.max(1, totalLogins);
+  const allowedPercent = Math.round((allowedCount / totalForPercent) * 100);
+  const verificationPercent = Math.round((verificationCount / totalForPercent) * 100);
+  const blockedPercent = Math.max(0, 100 - allowedPercent - verificationPercent);
+
+  // Filter login events
+  const filteredEvents = events.filter((evt) => {
+    const isSuspicious = evt.decision === 'BLOCK' || evt.decision === 'OTP' || evt.riskLevel !== 'LOW';
+    const matchesFilter =
+      selectedFilter === 'ALL' ||
+      (selectedFilter === 'SUSPICIOUS' && isSuspicious) ||
+      (selectedFilter === 'ALLOWED' && evt.decision === 'ALLOW');
+
+    const matchesSearch =
+      !searchQuery ||
+      evt.userEmail.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      evt.userName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      evt.location.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      evt.ipAddress.includes(searchQuery);
+
+    return matchesFilter && matchesSearch;
+  });
+
+  // Recent suspicious logins (for quick review)
+  const suspiciousLogins = events
+    .filter((e) => e.decision === 'BLOCK' || e.decision === 'OTP' || e.riskScore >= 40)
+    .slice(0, 4);
 
   return (
-    <DashboardLayout activePageTitle="Security Dashboard" activeBreadcrumb="Overview">
-      <div className="space-y-8">
-        {/* Page Header with Real-Time Quick Simulator Trigger */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-[#E8E6DF] dark:border-[#262626]">
+    <DashboardLayout activePageTitle="Security Overview" activeBreadcrumb="Security Overview">
+      <div className="space-y-6">
+        {/* Header Section */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-[#E8E6DF] dark:border-[#262626]">
           <div>
             <div className="flex items-center gap-2 mb-1">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              <span className="text-[11px] font-mono text-[#88857E] uppercase tracking-wider">
-                Risk Engine: Online · v3.2-xgb
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  isLiveData ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'
+                }`}
+              />
+              <span className="text-[11px] font-medium text-[#66635C] dark:text-[#9E9B93]">
+                {isLiveData ? 'Live Backend Connected' : 'Local Storage Mode'}
               </span>
             </div>
             <h1 className="text-2xl font-bold tracking-tight text-[#111111] dark:text-[#F4F4F2]">
-              Security Dashboard
+              Security Overview
             </h1>
-            <p className="mt-1 text-xs text-[#66635C] dark:text-[#9E9B93]">
-              Continuous risk-based authentication monitoring, signal telemetry, and automated lockout control.
+            <p className="mt-0.5 text-xs text-[#66635C] dark:text-[#9E9B93]">
+              Summary of recent login activity, verification challenges, and blocked threats.
             </p>
           </div>
 
@@ -106,365 +125,440 @@ export const SecurityDashboard: React.FC = () => {
               type="button"
               onClick={loadData}
               className="p-2 rounded-lg border border-[#E8E6DF] dark:border-[#262626] bg-white dark:bg-[#1A1A1A] text-[#66635C] dark:text-[#9E9B93] hover:text-[#111111] dark:hover:text-white transition-colors cursor-pointer"
-              title="Refresh telemetry"
+              title="Refresh Data"
             >
-              <RefreshCw className="w-4 h-4" />
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setSimulatorModalOpen(true)}
-              className="px-3.5 py-2 rounded-lg border border-[#E8E6DF] dark:border-[#2E2E2E] bg-white dark:bg-[#1A1A1A] hover:bg-[#F2F0E8] dark:hover:bg-[#222222] text-[#111111] dark:text-white text-xs font-semibold tracking-wide transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs"
-            >
-              <Zap className="w-3.5 h-3.5 text-[#E6C65C]" />
-              <span>Simulate Attack Probe</span>
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             </button>
 
             <Link
               to="/analysis"
-              className="px-3.5 py-2 rounded-lg bg-[#111111] text-white hover:bg-[#282828] dark:bg-[#E6C65C] dark:text-[#111111] dark:hover:bg-[#D8B74A] text-xs font-semibold tracking-wide transition-colors flex items-center gap-1.5 shadow-xs"
+              className="px-3.5 py-2 rounded-lg bg-[#E6C65C] text-[#111111] hover:bg-[#D8B74A] text-xs font-bold transition-colors flex items-center gap-1.5 shadow-xs"
             >
-              <Cpu className="w-3.5 h-3.5" />
-              <span>Deep Risk Analysis</span>
+              <Sliders className="w-3.5 h-3.5" />
+              <span>Risk Simulator</span>
             </Link>
           </div>
         </div>
 
-        {/* Top 5 Metrics Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+        {/* Compact Security Alert (only shown when active alerts exist) */}
+        {activeAlertsCount > 0 && (
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50/80 dark:bg-amber-950/20 text-xs transition-colors">
+            <div className="flex items-center gap-3">
+              <div className="w-7 h-7 rounded-md bg-amber-100 dark:bg-amber-900/60 text-amber-700 dark:text-amber-300 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-4 h-4" />
+              </div>
+              <div>
+                <p className="font-bold text-amber-900 dark:text-amber-200">
+                  {activeAlertsCount} Suspicious {activeAlertsCount === 1 ? 'Login' : 'Logins'} Need Review
+                </p>
+                <p className="text-[11px] text-amber-800/90 dark:text-amber-300/90">
+                  High-risk attempts were automatically blocked or challenged to protect user accounts.
+                </p>
+              </div>
+            </div>
+
+            <Link
+              to="/alerts"
+              className="px-3 py-1.5 rounded-md bg-amber-600 hover:bg-amber-700 text-white font-semibold text-xs whitespace-nowrap self-start sm:self-auto transition-colors"
+            >
+              Review Alerts &rarr;
+            </Link>
+          </div>
+        )}
+
+        {/* Four Core Statistics Cards */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <StatCard
-            label="Total Attempts"
-            value={metrics?.totalAttempts || 5240}
-            subtext="Last 24 hours rolling window"
-            trend={{ direction: 'neutral', value: '+4.2% vs yesterday' }}
-            icon={<Activity className="w-4 h-4" />}
+            label="Total Login Attempts"
+            value={totalLogins}
+            subtext="All evaluated logins"
+            icon={<Activity className="w-4 h-4 text-blue-500" />}
           />
           <StatCard
-            label="Low Risk (0–39)"
-            value={metrics?.lowRiskCount || 4560}
-            subtext="Seamless pass-through"
-            trend={{ direction: 'down', value: '87.1% allowed' }}
+            label="Allowed"
+            value={allowedCount}
+            subtext={`${allowedPercent}% allowed directly`}
             icon={<ShieldCheck className="w-4 h-4 text-emerald-600" />}
           />
           <StatCard
-            label="Medium Risk (40–69)"
-            value={metrics?.mediumRiskCount || 512}
-            subtext="OTP / MFA challenged"
-            trend={{ direction: 'up', value: '9.8% step-up' }}
+            label="Verification Required"
+            value={verificationCount}
+            subtext={`${verificationPercent}% prompted for OTP`}
             icon={<HelpCircle className="w-4 h-4 text-amber-500" />}
           />
           <StatCard
-            label="High Risk (70–100)"
-            value={metrics?.highRiskCount || 168}
-            subtext="Anomalous threats blocked"
-            trend={{ direction: 'up', value: '+18% velocity' }}
-            highlight={true}
+            label="Blocked"
+            value={blockedCount}
+            subtext={`${blockedPercent}% blocked immediately`}
+            highlight={blockedCount > 0}
             icon={<ShieldAlert className="w-4 h-4 text-rose-600" />}
           />
-          <StatCard
-            label="Blocked Attempts"
-            value={metrics?.blockedCount || 142}
-            subtext="Perimeter gate lockouts"
-            trend={{ direction: 'up', value: '100% intercepted' }}
-            icon={<Lock className="w-4 h-4 text-rose-700" />}
-          />
         </div>
 
-        {/* Charts Section: 2 Charts Side-by-Side */}
+        {/* Two-Column Overview: Breakdown & Why Logins Are Flagged */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {/* Main Activity Timeline (8 cols on lg) */}
-          <div className="lg:col-span-8 p-6 rounded-xl border border-[#E8E6DF] dark:border-[#262626] bg-white dark:bg-[#161616]">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-4 mb-4 border-b border-[#F0EEE6] dark:border-[#262626]">
-              <div>
-                <h3 className="text-sm font-bold text-[#111111] dark:text-white">
-                  24-Hour Authentication Activity
-                </h3>
-                <p className="text-xs text-[#66635C] dark:text-[#9E9B93]">
-                  Allowed logins vs. Step-up OTP challenges vs. Blocked attempts
-                </p>
-              </div>
-
-              <div className="flex items-center gap-4 text-xs font-medium">
-                <span className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" /> Allowed (0–39)
-                </span>
-                <span className="flex items-center gap-1.5 text-amber-600 dark:text-amber-400">
-                  <span className="w-2.5 h-2.5 rounded-full bg-[#E6C65C]" /> OTP (40–69)
-                </span>
-                <span className="flex items-center gap-1.5 text-rose-600 dark:text-rose-400">
-                  <span className="w-2.5 h-2.5 rounded-full bg-rose-600" /> Blocked (70–100)
-                </span>
-              </div>
-            </div>
-
-            <div className="h-64 sm:h-72 w-full">
-              {metrics && (
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={metrics.activityTimeline} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                    <defs>
-                      <linearGradient id="colorAllowed" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#10B981" stopOpacity={0.2} />
-                        <stop offset="95%" stopColor="#10B981" stopOpacity={0} />
-                      </linearGradient>
-                      <linearGradient id="colorOtp" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#E6C65C" stopOpacity={0.3} />
-                        <stop offset="95%" stopColor="#E6C65C" stopOpacity={0} />
-                      </linearGradient>
-                      <linearGradient id="colorBlocked" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#EF4444" stopOpacity={0.4} />
-                        <stop offset="95%" stopColor="#EF4444" stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke={gridColor} vertical={false} />
-                    <XAxis dataKey="time" stroke={textColor} fontSize={11} tickLine={false} />
-                    <YAxis stroke={textColor} fontSize={11} tickLine={false} />
-                    <Tooltip
-                      contentStyle={{
-                        backgroundColor: isDark ? '#1F1F1F' : '#FFFFFF',
-                        borderColor: isDark ? '#333333' : '#E5E5E5',
-                        borderRadius: '8px',
-                        fontSize: '12px',
-                        color: isDark ? '#FFFFFF' : '#111111',
-                      }}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="allowed"
-                      stroke="#10B981"
-                      strokeWidth={2}
-                      fillOpacity={1}
-                      fill="url(#colorAllowed)"
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="otp"
-                      stroke="#E6C65C"
-                      strokeWidth={2}
-                      fillOpacity={1}
-                      fill="url(#colorOtp)"
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="blocked"
-                      stroke="#EF4444"
-                      strokeWidth={2}
-                      fillOpacity={1}
-                      fill="url(#colorBlocked)"
-                    />
-                  </AreaChart>
-                </ResponsiveContainer>
-              )}
-            </div>
-          </div>
-
-          {/* Risk Distribution Breakdown (4 cols on lg) */}
-          <div className="lg:col-span-4 p-6 rounded-xl border border-[#E8E6DF] dark:border-[#262626] bg-white dark:bg-[#161616] flex flex-col justify-between">
+          {/* Left Column: Login Outcome Distribution */}
+          <div className="lg:col-span-5 p-5 rounded-xl border border-[#E8E6DF] dark:border-[#262626] bg-white dark:bg-[#161616] flex flex-col justify-between">
             <div>
-              <h3 className="text-sm font-bold text-[#111111] dark:text-white">
-                Risk Score Distribution
-              </h3>
-              <p className="text-xs text-[#66635C] dark:text-[#9E9B93]">
-                Authentication volume classified by risk score band
+              <h2 className="text-sm font-bold text-[#111111] dark:text-white mb-1">
+                Login Results Breakdown
+              </h2>
+              <p className="text-xs text-[#66635C] dark:text-[#9E9B93] mb-5">
+                How authentication attempts were handled based on risk scores:
               </p>
 
-              <div className="mt-4 h-48 w-full">
-                {metrics && (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={metrics.riskDistribution} layout="vertical" margin={{ top: 0, right: 10, left: 10, bottom: 0 }}>
-                      <XAxis type="number" hide />
-                      <YAxis dataKey="name" type="category" stroke={textColor} fontSize={10} width={90} tickLine={false} />
-                      <Tooltip
-                        contentStyle={{
-                          backgroundColor: isDark ? '#1F1F1F' : '#FFFFFF',
-                          borderColor: isDark ? '#333333' : '#E5E5E5',
-                          borderRadius: '8px',
-                          fontSize: '11px',
-                        }}
-                      />
-                      <Bar dataKey="value" radius={[0, 4, 4, 0]}>
-                        {metrics.riskDistribution.map((entry: any, index: number) => (
-                          <Cell key={`cell-${index}`} fill={entry.color} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                )}
+              <div className="space-y-4">
+                {/* Allowed */}
+                <div>
+                  <div className="flex justify-between text-xs font-semibold mb-1">
+                    <span className="text-emerald-700 dark:text-emerald-400">Allowed (Low Risk)</span>
+                    <span className="font-mono text-[#111111] dark:text-white">
+                      {allowedPercent}% ({allowedCount.toLocaleString()})
+                    </span>
+                  </div>
+                  <div className="w-full h-2 rounded-full bg-emerald-100 dark:bg-emerald-950/50 overflow-hidden">
+                    <div
+                      className="h-full bg-emerald-500 rounded-full transition-all duration-300"
+                      style={{ width: `${allowedPercent}%` }}
+                    />
+                  </div>
+                </div>
+
+                {/* Verification Required */}
+                <div>
+                  <div className="flex justify-between text-xs font-semibold mb-1">
+                    <span className="text-amber-700 dark:text-amber-400">Verification Required (Medium Risk)</span>
+                    <span className="font-mono text-[#111111] dark:text-white">
+                      {verificationPercent}% ({verificationCount.toLocaleString()})
+                    </span>
+                  </div>
+                  <div className="w-full h-2 rounded-full bg-amber-100 dark:bg-amber-950/50 overflow-hidden">
+                    <div
+                      className="h-full bg-[#E6C65C] rounded-full transition-all duration-300"
+                      style={{ width: `${verificationPercent}%` }}
+                    />
+                  </div>
+                </div>
+
+                {/* Blocked */}
+                <div>
+                  <div className="flex justify-between text-xs font-semibold mb-1">
+                    <span className="text-rose-700 dark:text-rose-400">Blocked (High Risk)</span>
+                    <span className="font-mono text-[#111111] dark:text-white">
+                      {blockedPercent}% ({blockedCount.toLocaleString()})
+                    </span>
+                  </div>
+                  <div className="w-full h-2 rounded-full bg-rose-100 dark:bg-rose-950/50 overflow-hidden">
+                    <div
+                      className="h-full bg-rose-500 rounded-full transition-all duration-300"
+                      style={{ width: `${blockedPercent}%` }}
+                    />
+                  </div>
+                </div>
               </div>
             </div>
 
-            <div className="mt-4 pt-4 border-t border-[#F0EEE6] dark:border-[#262626] flex items-center justify-between text-xs text-[#66635C] dark:text-[#9E9B93]">
-              <span>Decision: Low (0–39) · Medium (40–69) · High (70–100)</span>
-              <Link to="/analysis" className="text-[#E6C65C] font-semibold hover:underline">
-                Inspect →
-              </Link>
+            {/* Clear Policy Tiers */}
+            <div className="mt-6 pt-4 border-t border-[#F0EEE6] dark:border-[#262626] text-xs text-[#66635C] dark:text-[#9E9B93] space-y-1">
+              <div className="flex justify-between">
+                <span>Score 0–39:</span>
+                <span className="font-semibold text-emerald-600">Allowed without extra steps</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Score 40–69:</span>
+                <span className="font-semibold text-amber-600">One-time passcode required</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Score 70–100:</span>
+                <span className="font-semibold text-rose-600">Blocked immediately</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Right Column: Why Logins Are Flagged */}
+          <div className="lg:col-span-7 p-5 rounded-xl border border-[#E8E6DF] dark:border-[#262626] bg-white dark:bg-[#161616]">
+            <div className="flex items-center justify-between mb-1">
+              <h2 className="text-sm font-bold text-[#111111] dark:text-white">
+                Why Logins Are Flagged
+              </h2>
+              <span className="text-[11px] text-[#66635C] dark:text-[#9E9B93]">6 Key Signals</span>
+            </div>
+            <p className="text-xs text-[#66635C] dark:text-[#9E9B93] mb-4">
+              Every login is checked across these signals to calculate an accurate risk score:
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+              {/* 1. Trusted Device */}
+              <div className="p-3 rounded-lg bg-[#F8F7F3] dark:bg-[#1F1F1F] border border-[#E8E6DF] dark:border-[#2A2A2A]">
+                <div className="flex items-center gap-2 mb-1">
+                  <Laptop className="w-3.5 h-3.5 text-[#E6C65C]" />
+                  <span className="font-bold text-[#111111] dark:text-white">Trusted Device</span>
+                </div>
+                <p className="text-[11px] text-[#66635C] dark:text-[#9E9B93]">
+                  Matches the user’s known computer or phone. New or unrecognized devices raise risk.
+                </p>
+              </div>
+
+              {/* 2. Unusual Location */}
+              <div className="p-3 rounded-lg bg-[#F8F7F3] dark:bg-[#1F1F1F] border border-[#E8E6DF] dark:border-[#2A2A2A]">
+                <div className="flex items-center gap-2 mb-1">
+                  <Globe className="w-3.5 h-3.5 text-[#E6C65C]" />
+                  <span className="font-bold text-[#111111] dark:text-white">Unusual Location</span>
+                </div>
+                <p className="text-[11px] text-[#66635C] dark:text-[#9E9B93]">
+                  Access from an unexpected city or foreign country raises the risk level.
+                </p>
+              </div>
+
+              {/* 3. VPN Detected */}
+              <div className="p-3 rounded-lg bg-[#F8F7F3] dark:bg-[#1F1F1F] border border-[#E8E6DF] dark:border-[#2A2A2A]">
+                <div className="flex items-center gap-2 mb-1">
+                  <Shield className="w-3.5 h-3.5 text-[#E6C65C]" />
+                  <span className="font-bold text-[#111111] dark:text-white">VPN Detected</span>
+                </div>
+                <p className="text-[11px] text-[#66635C] dark:text-[#9E9B93]">
+                  Connections through anonymous VPN proxies or Tor nodes trigger extra checks.
+                </p>
+              </div>
+
+              {/* 4. Failed Login Attempts */}
+              <div className="p-3 rounded-lg bg-[#F8F7F3] dark:bg-[#1F1F1F] border border-[#E8E6DF] dark:border-[#2A2A2A]">
+                <div className="flex items-center gap-2 mb-1">
+                  <Lock className="w-3.5 h-3.5 text-[#E6C65C]" />
+                  <span className="font-bold text-[#111111] dark:text-white">Failed Login Attempts</span>
+                </div>
+                <p className="text-[11px] text-[#66635C] dark:text-[#9E9B93]">
+                  Multiple wrong passwords before logging in suggest possible password guessing.
+                </p>
+              </div>
+
+              {/* 5. Unusual Login Time */}
+              <div className="p-3 rounded-lg bg-[#F8F7F3] dark:bg-[#1F1F1F] border border-[#E8E6DF] dark:border-[#2A2A2A]">
+                <div className="flex items-center gap-2 mb-1">
+                  <Clock className="w-3.5 h-3.5 text-[#E6C65C]" />
+                  <span className="font-bold text-[#111111] dark:text-white">Unusual Login Time</span>
+                </div>
+                <p className="text-[11px] text-[#66635C] dark:text-[#9E9B93]">
+                  Access occurring outside habitual operating hours or in the middle of the night.
+                </p>
+              </div>
+
+              {/* 6. Behaviour Changes */}
+              <div className="p-3 rounded-lg bg-[#F8F7F3] dark:bg-[#1F1F1F] border border-[#E8E6DF] dark:border-[#2A2A2A]">
+                <div className="flex items-center gap-2 mb-1">
+                  <MousePointer className="w-3.5 h-3.5 text-[#E6C65C]" />
+                  <span className="font-bold text-[#111111] dark:text-white">Behaviour Changes</span>
+                </div>
+                <p className="text-[11px] text-[#66635C] dark:text-[#9E9B93]">
+                  Typing cadence or mouse speed that mimics automated scripts instead of humans.
+                </p>
+              </div>
             </div>
           </div>
         </div>
 
-        {/* Bottom Section: Recent Login Events Table + Active Alerts Drawer */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {/* Recent Events Table (8 cols on lg) */}
-          <div className="lg:col-span-8 p-6 rounded-xl border border-[#E8E6DF] dark:border-[#262626] bg-white dark:bg-[#161616]">
-            <div className="flex items-center justify-between pb-4 mb-4 border-b border-[#F0EEE6] dark:border-[#262626]">
-              <div>
-                <h3 className="text-sm font-bold text-[#111111] dark:text-white">
-                  Recent Authentication Events
-                </h3>
-                <p className="text-xs text-[#66635C] dark:text-[#9E9B93]">
-                  Real-time telemetry stream from authentication endpoints
-                </p>
+        {/* Recent Suspicious Logins Callout (if any flagged recently) */}
+        {suspiciousLogins.length > 0 && (
+          <div className="p-5 rounded-xl border border-[#E8E6DF] dark:border-[#262626] bg-white dark:bg-[#161616]">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <ShieldAlert className="w-4 h-4 text-rose-600 dark:text-rose-400" />
+                <h2 className="text-sm font-bold text-[#111111] dark:text-white">
+                  Recent Suspicious Logins
+                </h2>
+              </div>
+              <Link
+                to="/alerts"
+                className="text-xs font-semibold text-[#66635C] dark:text-[#9E9B93] hover:text-[#111111] dark:hover:text-white flex items-center gap-1"
+              >
+                <span>View All Alerts</span>
+                <ArrowRight className="w-3 h-3" />
+              </Link>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              {suspiciousLogins.map((item) => (
+                <div
+                  key={item.id}
+                  className="p-3.5 rounded-lg border border-[#E8E6DF] dark:border-[#2A2A2A] bg-[#F8F7F3] dark:bg-[#1C1C1C] text-xs space-y-2"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-[#111111] dark:text-white truncate max-w-[120px]">
+                      {item.userName}
+                    </span>
+                    <span className="font-mono font-bold text-xs text-rose-600 dark:text-rose-400">
+                      Score: {item.riskScore}
+                    </span>
+                  </div>
+
+                  <p className="text-[11px] text-[#66635C] dark:text-[#9E9B93] truncate">
+                    {item.location} · {item.device}
+                  </p>
+
+                  <div className="flex items-center justify-between pt-1 border-t border-[#E8E6DF] dark:border-[#2A2A2A]">
+                    <span className="text-[10px] text-[#88857E]">{item.timestamp}</span>
+                    <span
+                      className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                        item.decision === 'BLOCK'
+                          ? 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300'
+                          : 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
+                      }`}
+                    >
+                      {item.decision === 'BLOCK' ? 'Blocked' : 'OTP Challenge'}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Recent Authentication Activity Table */}
+        <div className="p-5 rounded-xl border border-[#E8E6DF] dark:border-[#262626] bg-white dark:bg-[#161616]">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-[#F0EEE6] dark:border-[#262626]">
+            <div>
+              <h2 className="text-sm font-bold text-[#111111] dark:text-white">
+                Recent Login Activity
+              </h2>
+              <p className="text-xs text-[#66635C] dark:text-[#9E9B93]">
+                Authentication attempts recorded with calculated risk scores and actions taken.
+              </p>
+            </div>
+
+            {/* Filter Pills and Search */}
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-[#88857E]" />
+                <input
+                  type="text"
+                  placeholder="Search user, IP, location..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="pl-8 pr-3 py-1.5 text-xs rounded-lg border border-[#E8E6DF] dark:border-[#2E2E2E] bg-[#F8F7F3] dark:bg-[#1E1E1E] text-[#111111] dark:text-white focus:outline-none focus:ring-1 focus:ring-[#E6C65C]"
+                />
+              </div>
+
+              <div className="flex items-center gap-1 bg-[#F0EEE6] dark:bg-[#202020] p-1 rounded-lg text-xs font-medium">
+                <button
+                  type="button"
+                  onClick={() => setSelectedFilter('ALL')}
+                  className={`px-2.5 py-1 rounded transition-colors cursor-pointer text-[11px] font-bold ${
+                    selectedFilter === 'ALL'
+                      ? 'bg-white dark:bg-[#111111] text-[#111111] dark:text-white shadow-2xs'
+                      : 'text-[#66635C] dark:text-[#9E9B93]'
+                  }`}
+                >
+                  All ({events.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedFilter('SUSPICIOUS')}
+                  className={`px-2.5 py-1 rounded transition-colors cursor-pointer text-[11px] font-bold ${
+                    selectedFilter === 'SUSPICIOUS'
+                      ? 'bg-white dark:bg-[#111111] text-[#111111] dark:text-white shadow-2xs'
+                      : 'text-[#66635C] dark:text-[#9E9B93]'
+                  }`}
+                >
+                  Flagged Only
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedFilter('ALLOWED')}
+                  className={`px-2.5 py-1 rounded transition-colors cursor-pointer text-[11px] font-bold ${
+                    selectedFilter === 'ALLOWED'
+                      ? 'bg-white dark:bg-[#111111] text-[#111111] dark:text-white shadow-2xs'
+                      : 'text-[#66635C] dark:text-[#9E9B93]'
+                  }`}
+                >
+                  Allowed
+                </button>
               </div>
 
               <Link
                 to="/events"
-                className="text-xs font-semibold text-[#111111] dark:text-[#E6C65C] hover:underline flex items-center gap-1"
+                className="text-xs font-semibold text-[#66635C] dark:text-[#9E9B93] hover:text-[#111111] dark:hover:text-white px-2 py-1"
               >
-                <span>View Full Audit Log</span>
-                <ChevronRight className="w-3.5 h-3.5" />
+                All Events &rarr;
               </Link>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead>
-                  <tr className="border-b border-[#E8E6DF] dark:border-[#262626] text-[#66635C] dark:text-[#9E9B93] uppercase font-semibold text-[10px]">
-                    <th className="pb-2.5 font-medium">User</th>
-                    <th className="pb-2.5 font-medium">Device & Location</th>
-                    <th className="pb-2.5 font-medium">VPN</th>
-                    <th className="pb-2.5 font-medium">Risk Score</th>
-                    <th className="pb-2.5 font-medium text-right">Decision</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#F0EEE6] dark:divide-[#222222]">
-                  {recentEvents.map((event) => (
-                    <tr key={event.id} className="hover:bg-[#F8F7F3] dark:hover:bg-[#1A1A1A] transition-colors">
-                      <td className="py-3 pr-3">
-                        <p className="font-semibold text-[#111111] dark:text-white truncate max-w-[160px]">
-                          {event.userEmail}
-                        </p>
-                        <p className="text-[11px] font-mono text-[#88857E] mt-0.5">
-                          {event.ipAddress}
-                        </p>
-                      </td>
-                      <td className="py-3 pr-3">
-                        <p className="text-[#33312E] dark:text-[#D1CEC4] truncate max-w-[150px]">
-                          {event.device}
-                        </p>
-                        <p className="text-[11px] text-[#88857E] mt-0.5 truncate max-w-[150px]">
-                          {event.location}
-                        </p>
-                      </td>
-                      <td className="py-3 pr-3 font-mono">
-                        {event.vpn ? (
-                          <span className="text-rose-600 dark:text-rose-400 font-semibold">Yes</span>
-                        ) : (
-                          <span className="text-[#88857E]">No</span>
-                        )}
-                      </td>
-                      <td className="py-3 pr-3">
-                        <RiskBadge level={event.riskLevel} showScore={event.riskScore} size="sm" />
-                      </td>
-                      <td className="py-3 text-right">
-                        <RiskBadge decision={event.decision} size="sm" />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
             </div>
           </div>
 
-          {/* Active Security Alerts (4 cols on lg) */}
-          <div className="lg:col-span-4 p-6 rounded-xl border border-[#E8E6DF] dark:border-[#262626] bg-white dark:bg-[#161616] flex flex-col justify-between">
-            <div>
-              <div className="flex items-center justify-between pb-4 mb-4 border-b border-[#F0EEE6] dark:border-[#262626]">
-                <div className="flex items-center gap-2">
-                  <AlertOctagon className="w-4 h-4 text-rose-600" />
-                  <h3 className="text-sm font-bold text-[#111111] dark:text-white">
-                    Active Security Alerts
-                  </h3>
-                </div>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300">
-                  {activeAlerts.length} Critical
-                </span>
-              </div>
-
-              <div className="space-y-3">
-                {activeAlerts.map((alert) => (
-                  <div
-                    key={alert.id}
-                    className="p-3.5 rounded-lg border border-[#E8E6DF] dark:border-[#2A2A2A] bg-[#F8F7F3] dark:bg-[#1F1F1F] space-y-1.5"
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <p className="text-xs font-bold text-[#111111] dark:text-white leading-snug">
-                        {alert.title}
-                      </p>
-                      <span className="text-[10px] font-mono text-[#88857E] shrink-0">
-                        {alert.timestamp}
+          <div className="mt-4 overflow-x-auto">
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="border-b border-[#E8E6DF] dark:border-[#262626] text-[#8A867E]">
+                  <th className="py-2.5 px-3 font-semibold">User</th>
+                  <th className="py-2.5 px-3 font-semibold">Location & IP</th>
+                  <th className="py-2.5 px-3 font-semibold">Device</th>
+                  <th className="py-2.5 px-3 font-semibold">Risk Score</th>
+                  <th className="py-2.5 px-3 font-semibold">Action Taken</th>
+                  <th className="py-2.5 px-3 font-semibold">Flagged Reasons</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#F0EEE6] dark:divide-[#222222]">
+                {filteredEvents.slice(0, 10).map((evt) => (
+                  <tr key={evt.id} className="hover:bg-[#F8F7F3] dark:hover:bg-[#1C1C1C] transition-colors">
+                    <td className="py-3 px-3">
+                      <div>
+                        <span className="font-semibold text-[#111111] dark:text-white block">
+                          {evt.userName}
+                        </span>
+                        <span className="text-[11px] text-[#8A867E] font-mono">{evt.userEmail}</span>
+                      </div>
+                    </td>
+                    <td className="py-3 px-3 text-[#66635C] dark:text-[#9E9B93]">
+                      <span className="block text-[#111111] dark:text-white font-medium">{evt.location}</span>
+                      <span className="text-[11px] text-[#88857E] font-mono">{evt.ipAddress}</span>
+                    </td>
+                    <td className="py-3 px-3 text-[#66635C] dark:text-[#9E9B93]">
+                      <span className="block text-[#111111] dark:text-white">{evt.device}</span>
+                      <span className="text-[10px] text-[#88857E]">
+                        {evt.deviceStatus === 'trusted' ? 'Trusted' : 'New Device'}
                       </span>
-                    </div>
-
-                    <p className="text-[11px] text-[#66635C] dark:text-[#9E9B93] line-clamp-2 leading-relaxed">
-                      {alert.description}
-                    </p>
-
-                    <div className="pt-1 flex items-center justify-between text-[11px]">
-                      <span className="font-mono font-semibold text-rose-600">
-                        Score: {alert.riskScore}%
-                      </span>
-                      <Link
-                        to="/alerts"
-                        className="text-[#E6C65C] font-semibold hover:underline"
+                    </td>
+                    <td className="py-3 px-3 font-mono font-bold text-sm text-[#111111] dark:text-white">
+                      {evt.riskScore}
+                    </td>
+                    <td className="py-3 px-3">
+                      <span
+                        className={`inline-flex px-2 py-0.5 text-[11px] font-bold rounded ${
+                          evt.decision === 'ALLOW'
+                            ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
+                            : evt.decision === 'OTP'
+                            ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
+                            : 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300'
+                        }`}
                       >
-                        Investigate →
-                      </Link>
-                    </div>
-                  </div>
+                        {evt.decision === 'ALLOW'
+                          ? 'Allowed'
+                          : evt.decision === 'OTP'
+                          ? 'OTP Verification'
+                          : 'Blocked'}
+                      </span>
+                    </td>
+                    <td className="py-3 px-3 text-[#66635C] dark:text-[#9E9B93]">
+                      {evt.riskFactors && evt.riskFactors.length > 0 ? (
+                        <div className="flex flex-wrap gap-1 max-w-xs">
+                          {evt.riskFactors.slice(0, 2).map((rf, idx) => (
+                            <span
+                              key={idx}
+                              className="px-1.5 py-0.5 rounded text-[10px] bg-[#F0EEE6] dark:bg-[#252525] text-[#55524B] dark:text-[#AAA7A0] truncate"
+                            >
+                              {rf}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-[11px] text-emerald-600 dark:text-emerald-400">Normal Baseline</span>
+                      )}
+                    </td>
+                  </tr>
                 ))}
-              </div>
-            </div>
-
-            <div className="mt-4 pt-4 border-t border-[#F0EEE6] dark:border-[#262626]">
-              <Link
-                to="/alerts"
-                className="w-full block text-center py-2 px-3 rounded-lg border border-[#E8E6DF] dark:border-[#2E2E2E] bg-white dark:bg-[#1C1C1C] hover:bg-[#F2F0E8] dark:hover:bg-[#262626] text-xs font-semibold text-[#111111] dark:text-white transition-colors"
-              >
-                Open Incident Queue
-              </Link>
-            </div>
+              </tbody>
+            </table>
           </div>
         </div>
       </div>
-
-      {/* Simulator Modal for Live Demo Testing */}
-      {simulatorModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-          <div className="w-full max-w-4xl max-h-[90vh] overflow-y-auto bg-white dark:bg-[#161616] border border-[#E8E6DF] dark:border-[#262626] rounded-2xl shadow-2xl animate-fade-in">
-            <div className="p-4 border-b border-[#E8E6DF] dark:border-[#262626] flex items-center justify-between sticky top-0 bg-white dark:bg-[#161616] z-10">
-              <div className="flex items-center gap-2">
-                <Zap className="w-4 h-4 text-[#E6C65C]" />
-                <h3 className="font-bold text-sm text-[#111111] dark:text-white">
-                  Live Attack & Authentication Simulator
-                </h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setSimulatorModalOpen(false)}
-                className="p-1.5 text-[#88857E] hover:text-[#111111] dark:hover:text-white cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="p-4 sm:p-6">
-              <RiskSimulator
-                onRecordedEvent={() => {
-                  loadData();
-                }}
-              />
-            </div>
-          </div>
-        </div>
-      )}
     </DashboardLayout>
   );
 };

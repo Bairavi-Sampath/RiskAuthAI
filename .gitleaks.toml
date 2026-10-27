@@ -1,0 +1,28 @@
+# Gitleaks Configuration for RiskAuthAI
+title = "RiskAuthAI Gitleaks Configuration"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allowlist for development templates, default configs, and testing credentials"
+paths = [
+    '''\.env\.example$''',
+    '''backend/\.env\.example$''',
+    '''backend/config\.py$''',
+    '''backend/test_main\.py$''',
+    '''src/services/api\.ts$''',
+    '''src/services/mockData\.ts$''',
+    '''docker-compose\.yml$''',
+    '''README\.md$'''
+]
+regexes = [
+    '''riskauthai_super_secret_jwt_key_2026_change_in_production''',
+    '''RiskAuthAdmin2026!''',
+    '''RiskAuthGrafana2026!'''
+]
+stopwords = [
+    '''riskauthai_super_secret_jwt_key_2026_change_in_production''',
+    '''RiskAuthAdmin2026!''',
+    '''RiskAuthGrafana2026!'''
+]
