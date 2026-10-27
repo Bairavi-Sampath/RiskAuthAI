@@ -1,5 +1,5 @@
 import json
-from .database import engine, SessionLocal, Base
+from .database import engine, SessionLocal, Base, run_integrity_check, set_init_status
 from .models import LoginEventModel, SecurityAlertModel, UserAccountModel, RiskThresholdSettingsModel
 
 INITIAL_THRESHOLDS = {
@@ -261,38 +261,57 @@ INITIAL_ALERTS = [
     },
 ]
 
+from sqlalchemy import text
+
 def init_db():
-    """Initializes tables and populates baseline seed records if empty."""
-    Base.metadata.create_all(bind=engine)
-    db = SessionLocal()
+    """Initializes tables, ensures WAL mode, and populates baseline seed records if empty."""
     try:
-        # Settings
-        existing_settings = db.query(RiskThresholdSettingsModel).first()
-        if not existing_settings:
-            db.add(RiskThresholdSettingsModel(**INITIAL_THRESHOLDS))
-            db.commit()
+        Base.metadata.create_all(bind=engine)
 
-        # Users
-        if db.query(UserAccountModel).count() == 0:
-            for u in INITIAL_USERS:
-                db.add(UserAccountModel(**u))
-            db.commit()
+        # Configure WAL journal mode once on database creation/startup (SQLite only)
+        if engine.dialect.name == "sqlite":
+            try:
+                with engine.connect() as conn:
+                    conn.execute(text("PRAGMA journal_mode=WAL;"))
+                    conn.commit()
+            except Exception as e:
+                print(f"[WARN] Could not set WAL journal mode: {e}")
 
-        # Login Events
-        if db.query(LoginEventModel).count() == 0:
-            for e in INITIAL_EVENTS:
-                db.add(LoginEventModel(**e))
-            db.commit()
+        db = SessionLocal()
+        try:
+            # Settings
+            existing_settings = db.query(RiskThresholdSettingsModel).first()
+            if not existing_settings:
+                db.add(RiskThresholdSettingsModel(**INITIAL_THRESHOLDS))
+                db.commit()
 
-        # Alerts
-        if db.query(SecurityAlertModel).count() == 0:
-            for a in INITIAL_ALERTS:
-                db.add(SecurityAlertModel(**a))
-            db.commit()
+            # Users
+            if db.query(UserAccountModel).count() == 0:
+                for u in INITIAL_USERS:
+                    db.add(UserAccountModel(**u))
+                db.commit()
 
-        print("[SUCCESS] Database initialized and seeded successfully.")
-    finally:
-        db.close()
+            # Login Events
+            if db.query(LoginEventModel).count() == 0:
+                for e in INITIAL_EVENTS:
+                    db.add(LoginEventModel(**e))
+                db.commit()
+
+            # Alerts
+            if db.query(SecurityAlertModel).count() == 0:
+                for a in INITIAL_ALERTS:
+                    db.add(SecurityAlertModel(**a))
+                db.commit()
+
+            # Run non-intrusive integrity verification
+            diag = run_integrity_check()
+            set_init_status(initialized=True, error=None)
+            print(f"[SUCCESS] Database initialized and seeded successfully (WAL: {diag.get('journal_mode')}, Integrity: {diag.get('integrity')}).")
+        finally:
+            db.close()
+    except Exception as e:
+        set_init_status(initialized=False, error=str(e))
+        raise
 
 if __name__ == "__main__":
     init_db()

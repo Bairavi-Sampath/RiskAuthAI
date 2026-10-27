@@ -487,10 +487,88 @@ npm audit --audit-level=critical
 
 ---
 
+---
+
+## Phase 6: SQLite Database Reliability, Integrity & Backup Architecture
+
+Phase 6 implements high-reliability SQLite operational guarantees, non-blocking concurrency, live integrity diagnostics, and zero-downtime hot backups using Python's SQLite Online Backup API.
+
+### 1. Active Database Location & Engine Configuration
+* **Primary Database File**: `backend/data/riskauth.db` (in container: mounted at `/app/data/riskauth.db`).
+* **Concurrency Architecture (WAL Mode)**:
+  * Persistent `PRAGMA journal_mode=WAL;` is enabled once during database startup/initialization (`init_db.py`) under the SQLite dialect guard.
+  * Allows non-blocking concurrent reads while background writes are in progress.
+  * `PRAGMA synchronous=NORMAL;` guarantees crash-safety with optimal disk I/O.
+* **Lock Contention Mitigation & Connection PRAGMAs**:
+  * Connection hook in `backend/db/database.py` applies connection-scoped PRAGMAs only to SQLite connections:
+    * `PRAGMA busy_timeout=5000;` ensures that under high concurrent load, transactions wait up to 5000ms for lock acquisition rather than raising `OperationalError: database is locked`.
+    * `PRAGMA foreign_keys=ON;` enforces referential integrity.
+
+### 2. Database Integrity Diagnostics
+* **Live Diagnostic Endpoint**:
+  ```http
+  GET /api/v1/health/database
+  ```
+  Returns:
+  ```json
+  {
+    "engine": "SQLite",
+    "status": "healthy",
+    "integrity": "ok",
+    "journal_mode": "wal",
+    "foreign_keys": true,
+    "busy_timeout_ms": 5000
+  }
+  ```
+* **Integrated Healthcheck**: `GET /health` includes `"database": "healthy"` without breaking backward-compatible contracts, returning `"database": "unhealthy"` and `"status": "degraded"` if diagnostics or initialization fail.
+
+### 3. Safe Online Hot Backups
+Hot backups are generated using SQLite’s native non-blocking Online Backup API (`sqlite3.Connection.backup`) via `backend/db/backup.py`. Backups capture a consistent snapshot of `riskauth.db` without pausing FastAPI or active write transactions.
+
+#### Creating an Immediate Backup
+```bash
+cd backend
+python -m db.backup --create
+```
+* Generates an atomically committed snapshot: `backend/data/backups/riskauth_backup_YYYYMMDD_HHMMSS.db`.
+* Staged in a temporary file to ensure no partial backups exist on failure.
+* Generates companion SHA-256 (`.sha256`) and metadata manifest (`.manifest.json`) files.
+* Automatically verifies table existence and schema columns across all four application tables.
+
+#### Verifying Backup Snapshot Integrity
+```bash
+python -m db.backup --verify data/backups/riskauth_backup_20261027_161500.db
+```
+
+### 4. Cautious Restoration Procedure
+To prevent accidental data loss or corruption of production data:
+1. **Safety Safeguards**:
+   * Restoring directly over the active production database (`riskauth.db`) is blocked via `PermissionError`.
+   * Restoring over an existing target without explicit `overwrite=True` is refused via `FileExistsError`.
+   * The restore procedure **always defaults to dry-run mode** (`dry_run=True`), performing validation without modifying the target.
+   * Backups failing `PRAGMA integrity_check`, missing required tables, or having checksum mismatches are automatically rejected.
+2. **Testing Restore Safely (into a temporary target)**:
+   ```python
+   from db.backup import restore_backup
+   # Dry-run inspection:
+   restore_backup("data/backups/riskauth_backup_XYZ.db", "data/restored_test.db", dry_run=True)
+   # Safe execution into an alternate file:
+   restore_backup("data/backups/riskauth_backup_XYZ.db", "data/restored_test.db", dry_run=False)
+   ```
+
+### 5. Running Phase 6 Database Verification Tests (34 Tests)
+Run the expanded test suite covering concurrent threads, WAL mode, integrity checks, failure modes, and hot backups:
+```powershell
+cd backend
+python -m unittest test_main.py -v
+```
+
+---
+
 ## Security Notes & Production Readiness Caveats
 
-While Phase 3 & 4 add key defense-in-depth protections (JWT auth, SlowAPI throttling, restricted CORS, Prometheus metrics, structured logging, and automated Grafana dashboarding):
+While Phase 3, 4, 5 & 6 add defense-in-depth protections (JWT auth, SlowAPI throttling, restricted CORS, Prometheus metrics, structured logging, CI/CD automation, and SQLite WAL reliability):
 - **Secret Rotation**: Change `SECRET_KEY`, `ADMIN_PASSWORD`, and `GRAFANA_ADMIN_PASSWORD` before internet deployment.
-- **Storage**: SQLite is used for local single-node deployments. Multi-replica setups should point `DATABASE_URL` to PostgreSQL.
+- **SQLite Single-Node Operational Scope**: SQLite with WAL mode and hot backup automation provides resilient persistence for single-node deployments and enterprise edge appliances.
 - **Enterprise Identity**: For corporate deployment, replace local admin username/password with enterprise IdP SSO (SAML 2.0 / OIDC).
 - **Metric Cardinality & Privacy**: Never add user emails, passwords, tokens, or IP addresses to Prometheus metric labels; keep labels bounded to enum sets (`decision`, `risk_level`, `status_code`, normalized `endpoint`).

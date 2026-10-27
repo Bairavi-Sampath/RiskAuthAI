@@ -1,4 +1,5 @@
 import unittest
+import os
 import warnings
 warnings.filterwarnings("ignore")
 from fastapi.testclient import TestClient
@@ -768,6 +769,291 @@ class TestRiskAuthAIBackend(unittest.TestCase):
         self.assertIn(settings.LOG_LEVEL.upper(), ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
         self.assertIsInstance(settings.PROMETHEUS_METRICS_ENABLED, bool)
         self.assertTrue(settings.PROMETHEUS_METRICS_ENABLED)
+
+    def test_29_database_integrity_and_diagnostics_endpoint(self):
+        """Test GET /api/v1/health/database, /health reporting, and diagnostic failure truthfulness."""
+        from unittest.mock import patch
+        from db.database import run_integrity_check
+
+        # 1. Test direct programmatic diagnostic
+        diag = run_integrity_check()
+        self.assertEqual(diag["status"], "healthy")
+        self.assertEqual(diag["integrity"], "ok")
+        self.assertEqual(diag["journal_mode"], "wal")
+        self.assertTrue(diag["foreign_keys"])
+        self.assertGreaterEqual(diag["busy_timeout_ms"], 5000)
+
+        # 2. Test diagnostic HTTP endpoint under healthy operation
+        res = self.client.get("/api/v1/health/database")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(data["engine"], "SQLite")
+        self.assertEqual(data["status"], "healthy")
+        self.assertEqual(data["integrity"], "ok")
+        self.assertEqual(data["journal_mode"], "wal")
+
+        # 3. Test /health reports healthy
+        res_h = self.client.get("/health")
+        self.assertEqual(res_h.status_code, 200)
+        data_h = res_h.json()
+        self.assertEqual(data_h["database"], "healthy")
+        self.assertEqual(data_h["status"], "healthy")
+
+        # 4. Simulate a database diagnostic failure and verify truthful 503 response
+        failing_diag = {
+            "status": "unhealthy",
+            "integrity": "database disk image is malformed",
+            "journal_mode": "wal",
+            "foreign_keys": True,
+            "busy_timeout_ms": 5000,
+            "initialization_error": None
+        }
+        with patch("main.run_integrity_check", return_value=failing_diag):
+            res_fail = self.client.get("/api/v1/health/database")
+            self.assertEqual(res_fail.status_code, 503)
+            data_fail = res_fail.json()
+            self.assertEqual(data_fail["status"], "unhealthy")
+            self.assertEqual(data_fail["integrity"], "database disk image is malformed")
+
+            # /health must report unhealthy and degraded, preserving contract fields
+            res_fail_h = self.client.get("/health")
+            self.assertEqual(res_fail_h.status_code, 200)
+            data_fail_h = res_fail_h.json()
+            self.assertEqual(data_fail_h["database"], "unhealthy")
+            self.assertEqual(data_fail_h["status"], "degraded")
+            self.assertIn("service", data_fail_h)
+            self.assertIn("model_loaded", data_fail_h)
+
+        # 5. Simulate an initialization failure
+        init_fail_diag = {
+            "status": "unhealthy",
+            "integrity": "diagnostic_failed",
+            "journal_mode": "unknown",
+            "foreign_keys": False,
+            "busy_timeout_ms": 0,
+            "initialization_error": "Could not create tables: disk I/O error"
+        }
+        with patch("main.run_integrity_check", return_value=init_fail_diag):
+            res_init_fail = self.client.get("/api/v1/health/database")
+            self.assertEqual(res_init_fail.status_code, 503)
+            data_init_fail = res_init_fail.json()
+            self.assertEqual(data_init_fail["status"], "unhealthy")
+            self.assertEqual(data_init_fail["initialization_error"], "Could not create tables: disk I/O error")
+
+    def test_30_sqlite_wal_mode_and_busy_timeout(self):
+        """Test that SQLite PRAGMAs (WAL mode, busy timeout, foreign keys) are active on connections."""
+        from db.database import engine
+        from sqlalchemy import text
+
+        with engine.connect() as conn:
+            jm = conn.execute(text("PRAGMA journal_mode;")).scalar()
+            self.assertEqual(str(jm).lower(), "wal")
+
+            timeout = conn.execute(text("PRAGMA busy_timeout;")).scalar()
+            self.assertGreaterEqual(int(timeout), 5000)
+
+            fk = conn.execute(text("PRAGMA foreign_keys;")).scalar()
+            self.assertEqual(int(fk), 1)
+
+    def test_31_sqlite_online_backup_api(self):
+        """Test SQLite Online Backup API creates validated, checksummed backups with companion manifests."""
+        import tempfile
+        from db.backup import create_backup, verify_backup
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            res = create_backup(backup_dir=tmp_dir)
+            self.assertEqual(res["status"], "success")
+            self.assertEqual(res["integrity"], "ok")
+            self.assertTrue(os.path.exists(res["backup_file"]))
+            self.assertGreater(res["size_bytes"], 0)
+            self.assertEqual(len(res["sha256"]), 64)
+
+            # Check that manifest and sha256 files were created
+            self.assertTrue(os.path.exists(res["manifest_file"]))
+            self.assertTrue(os.path.exists(res["sha256_file"]))
+
+            # Verify no partial .tmp files remain
+            tmp_files = [f for f in os.listdir(tmp_dir) if f.endswith(".tmp")]
+            self.assertEqual(len(tmp_files), 0)
+
+            # Verify backup table counts match expectations
+            verification = verify_backup(res["backup_file"], require_checksum=True)
+            self.assertEqual(verification["status"], "valid")
+            self.assertEqual(verification["integrity"], "ok")
+            self.assertTrue(verification["checksum_verified"])
+            self.assertIn("login_events", verification["tables"])
+            self.assertIn("user_accounts", verification["tables"])
+            self.assertIn("security_alerts", verification["tables"])
+            self.assertIn("risk_threshold_settings", verification["tables"])
+
+    def test_32_backup_verification_failure_scenarios(self):
+        """Test missing tables, invalid backups, checksum tampering, and partial staging cleanup."""
+        import tempfile
+        import sqlite3
+        from db.backup import verify_backup, create_backup
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # 1. Test missing required tables
+            partial_db_path = os.path.join(tmp_dir, "incomplete.db")
+            conn = sqlite3.connect(partial_db_path)
+            conn.execute("CREATE TABLE only_one_table (id INT);")
+            conn.commit()
+            conn.close()
+
+            v_partial = verify_backup(partial_db_path)
+            self.assertEqual(v_partial["status"], "corrupt")
+            self.assertEqual(v_partial["integrity"], "missing_required_tables")
+            self.assertIn("missing_tables", v_partial)
+            self.assertIn("login_events", v_partial["missing_tables"])
+
+            # 2. Test missing required columns (schema mismatch)
+            invalid_schema_path = os.path.join(tmp_dir, "invalid_schema.db")
+            conn = sqlite3.connect(invalid_schema_path)
+            conn.execute("CREATE TABLE login_events (id INT);")
+            conn.execute("CREATE TABLE security_alerts (id INT);")
+            conn.execute("CREATE TABLE user_accounts (id INT);")
+            conn.execute("CREATE TABLE risk_threshold_settings (id INT);")
+            conn.commit()
+            conn.close()
+
+            v_schema = verify_backup(invalid_schema_path)
+            self.assertEqual(v_schema["status"], "corrupt")
+            self.assertEqual(v_schema["integrity"], "invalid_schema")
+            self.assertIn("missing required column", v_schema["error"])
+
+            # 3. Test checksum mismatch detection (tampered backup)
+            backup_res = create_backup(backup_dir=tmp_dir)
+            backup_path = backup_res["backup_file"]
+
+            # Tamper with the backup file by appending bytes
+            with open(backup_path, "ab") as f:
+                f.write(b"\x00\xffCORRUPT_BYTES")
+
+            v_tampered = verify_backup(backup_path)
+            self.assertEqual(v_tampered["status"], "corrupt")
+            self.assertEqual(v_tampered["integrity"], "checksum_mismatch")
+
+            # 4. Test non-existent file
+            v_missing = verify_backup(os.path.join(tmp_dir, "nonexistent.db"))
+            self.assertEqual(v_missing["status"], "error")
+            self.assertEqual(v_missing["integrity"], "missing_file")
+
+    def test_33_cautious_restore_procedure(self):
+        """Test cautious restore dry run, active database protection, and existing target refusal."""
+        import tempfile
+        from db.database import DEFAULT_DB_PATH
+        from db.backup import create_backup, restore_backup, verify_backup
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            backup_res = create_backup(backup_dir=tmp_dir)
+            backup_file = backup_res["backup_file"]
+
+            temp_restore_target = os.path.join(tmp_dir, "restored_test_target.db")
+
+            # 1. Dry run: must NOT write to destination
+            dry_res = restore_backup(backup_file, temp_restore_target, dry_run=True)
+            self.assertEqual(dry_res["status"], "dry_run")
+            self.assertFalse(os.path.exists(temp_restore_target))
+
+            # 2. Refuse to overwrite active production database
+            with self.assertRaises(PermissionError):
+                restore_backup(backup_file, DEFAULT_DB_PATH, dry_run=False)
+
+            # 3. Refuse to overwrite an existing target when overwrite=False
+            with open(temp_restore_target, "w") as f:
+                f.write("existing file")
+
+            with self.assertRaises(FileExistsError):
+                restore_backup(backup_file, temp_restore_target, dry_run=False, overwrite=False)
+
+            # 4. Successful restore with explicit overwrite=True into isolated test target
+            restore_res = restore_backup(backup_file, temp_restore_target, dry_run=False, overwrite=True)
+            self.assertEqual(restore_res["status"], "success")
+            self.assertTrue(os.path.exists(temp_restore_target))
+            self.assertEqual(restore_res["integrity"], "ok")
+
+            # Verify restored database
+            v = verify_backup(temp_restore_target)
+            self.assertEqual(v["integrity"], "ok")
+            self.assertGreaterEqual(v["tables"]["user_accounts"], 1)
+
+    def test_34_concurrent_database_access_isolated(self):
+        """Test concurrent reads and writes using an isolated temporary database (never mutating project DB)."""
+        import tempfile
+        import concurrent.futures
+        import uuid
+        from sqlalchemy import create_engine, text
+        from sqlalchemy.orm import sessionmaker
+        from db.database import Base
+        from db.models import LoginEventModel
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            isolated_db_path = os.path.join(tmp_dir, "concurrency_test.db")
+            isolated_url = f"sqlite:///{isolated_db_path}"
+
+            isolated_engine = create_engine(
+                isolated_url,
+                connect_args={"check_same_thread": False, "timeout": 15.0}
+            )
+
+            # Enable WAL mode and create tables on isolated engine
+            with isolated_engine.connect() as conn:
+                conn.execute(text("PRAGMA journal_mode=WAL;"))
+                conn.execute(text("PRAGMA busy_timeout=5000;"))
+                conn.execute(text("PRAGMA synchronous=NORMAL;"))
+                conn.commit()
+
+            Base.metadata.create_all(bind=isolated_engine)
+            IsolatedSession = sessionmaker(autocommit=False, autoflush=False, bind=isolated_engine)
+
+            def perform_isolated_write(worker_id: int):
+                session = IsolatedSession()
+                try:
+                    event = LoginEventModel(
+                        id=f"iso_{uuid.uuid4().hex[:8]}",
+                        user_email=f"worker_{worker_id}@enterprise.corp",
+                        user_name=f"Worker {worker_id}",
+                        timestamp="2026-10-27 12:00:00",
+                        ip_address="127.0.0.1",
+                        device="Isolated Worker",
+                        device_status="trusted",
+                        location="Localhost",
+                        location_status="normal",
+                        vpn=False,
+                        risk_score=10,
+                        risk_level="LOW",
+                        decision="ALLOW",
+                        failed_attempts=0,
+                        behaviour="normal",
+                        login_time_status="normal",
+                        risk_factors="[]"
+                    )
+                    session.add(event)
+                    session.commit()
+                    return True
+                finally:
+                    session.close()
+
+            def perform_isolated_read():
+                session = IsolatedSession()
+                try:
+                    return session.query(LoginEventModel).count()
+                finally:
+                    session.close()
+
+            # Execute 8 concurrent writes and 8 concurrent reads simultaneously
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+                write_futures = [executor.submit(perform_isolated_write, i) for i in range(8)]
+                read_futures = [executor.submit(perform_isolated_read) for _ in range(8)]
+
+                write_results = [f.result() for f in concurrent.futures.as_completed(write_futures)]
+                read_results = [f.result() for f in concurrent.futures.as_completed(read_futures)]
+
+            self.assertEqual(len(write_results), 8)
+            self.assertTrue(all(write_results))
+            self.assertEqual(len(read_results), 8)
+
+            isolated_engine.dispose()
 
 
 if __name__ == "__main__":

@@ -24,10 +24,13 @@ ENV/
 .coverage
 htmlcov/
 
-# Local databases
+# Local databases & WAL files
 *.db
+*.db-wal
+*.db-shm
 *.sqlite3
 backend/data/*.db
+backend/data/backups/
 
 # IDE & Editor files
 .idea/

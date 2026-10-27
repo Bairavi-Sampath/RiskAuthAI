@@ -20,7 +20,7 @@ from slowapi.errors import RateLimitExceeded
 
 from config import settings
 from auth import get_current_admin, create_access_token, verify_password
-from db.database import engine, get_db
+from db.database import engine, get_db, run_integrity_check
 from db.models import LoginEventModel, SecurityAlertModel, UserAccountModel, RiskThresholdSettingsModel
 from db.init_db import init_db
 from logger import logger, sanitize_data
@@ -297,12 +297,42 @@ class TokenResponse(BaseModel):
 def health_check():
     """Health check endpoint required by spec."""
     is_loaded = (model_artifact is not None) and ("model" in model_artifact)
+    diag = run_integrity_check()
+    init_err = diag.get("initialization_error")
+    db_ok = (diag.get("status") == "healthy") and (init_err is None)
+
+    overall_status = "healthy" if (is_loaded and db_ok) else "degraded"
     return {
-        "status": "healthy",
+        "status": overall_status,
         "service": "RiskAuthAI Backend",
         "model_loaded": is_loaded,
-        "model_type": "Random Forest Regressor" if is_loaded else "Rule-based Fallback"
+        "model_type": "Random Forest Regressor" if is_loaded else "Rule-based Fallback",
+        "database": "healthy" if db_ok else "unhealthy"
     }
+
+
+@app.get("/api/v1/health/database")
+def database_health_diagnostic(response: Response):
+    """Exposes SQLite PRAGMA integrity check and WAL operational parameters."""
+    diag = run_integrity_check()
+    init_err = diag.get("initialization_error")
+    is_healthy = (diag.get("status") == "healthy") and (init_err is None)
+    if not is_healthy:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+
+    payload = {
+        "engine": "SQLite",
+        "status": "healthy" if is_healthy else "unhealthy",
+        "integrity": diag.get("integrity", "diagnostic_failed"),
+        "journal_mode": diag.get("journal_mode", "unknown"),
+        "foreign_keys": diag.get("foreign_keys", False),
+        "busy_timeout_ms": diag.get("busy_timeout_ms", 0)
+    }
+    if init_err:
+        payload["initialization_error"] = init_err
+    return payload
+
+
 
 
 @app.get("/metrics")
